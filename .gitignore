@@ -5,3 +5,4 @@ coverage/
 *.trace.json
 .trace-reader-cache/
 *.tgz
+.claude/launch.json

@@ -9,6 +9,7 @@ import { safeText } from '../src/core/safe.js';
 import type { ScanResult, Session } from '../src/core/types.js';
 import { App, type AppProps } from '../src/ui/App.js';
 import { cell, clip, clipLine, filterSessions, wrap } from '../src/ui/format.js';
+import { demoTraces, scanDemo } from '../src/demo.js';
 
 const session = (id: string, date = '2026-10-05T12:00:00Z'): Session => ({
   id, nativeId: id, agent: 'codex', title: `Trace ${id}`, project: 'demo', cwd: '/tmp/demo',
@@ -22,19 +23,20 @@ const result = (sessions: Session[]): ScanResult => ({
   diagnostics: [{ agent: 'cursor', path: '/tmp/cursor', level: 'info', message: 'No source directory found' }],
 });
 async function eventually(check: () => boolean) {
-  for (let i = 0; i < 100; i++) { if (check()) return; await delay(10); }
+  // Ink emits a frame before passive effects attach a newly mounted panel's input handler.
+  for (let i = 0; i < 100; i++) { if (check()) { await delay(20); return; } await delay(10); }
   assert.fail('UI did not reach expected state');
 }
-function harness(columns: number, props: AppProps) {
+function harness(columns: number, props: AppProps, rows = 24) {
   const frames: string[] = [];
   const stdout = Object.assign(new Writable({ write(chunk, _encoding, callback) {
     const frame = safeText(chunk.toString());
     if (frame.includes('TRACE READER')) frames.push(frame);
     callback();
-  } }), { columns, rows: 24, isTTY: true });
+  } }), { columns, rows, isTTY: true });
   const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode() { return this; }, ref() {}, unref() {} });
   const app = render(createElement(App, props), { stdin, stdout, stderr: stdout, debug: true, interactive: true, patchConsole: false, kittyKeyboard: { mode: 'disabled' } });
-  return { app, stdin, frames, frame: () => frames.at(-1) ?? '' };
+  return { app, stdin, stdout, frames, frame: () => frames.at(-1) ?? '' };
 }
 
 test('terminal formatting strips executable controls and preserves graphemes within cell width', () => {
@@ -44,6 +46,50 @@ test('terminal formatting strips executable controls and preserves graphemes wit
   assert.equal(clipLine('    const x = 1;', 80), '    const x = 1;');
   assert.deepEqual(wrap('  alpha\nbeta', 6), ['  alph', 'a', 'beta']);
 });
+
+for (const columns of [80, 120, 160]) {
+  test(`reading, evidence, palette and resize work at ${columns} columns`, async () => {
+    const traces = demoTraces();
+    let exports = 0;
+    const ui = harness(columns, { demo: true, reducedMotion: true,
+      onScan: (emit, signal) => scanDemo(traces, emit, signal),
+      onInspect: async s => traces.find(t => t.session.id === s.id)!,
+      onExport: async () => { exports++; return '/tmp/demo.trace.json'; },
+    });
+    const fits = () => {
+      assert.ok(ui.frame().split('\n').length <= ui.stdout.rows + 1, ui.frame());
+      assert.ok(ui.frame().split('\n').every(line => stringWidth(line) <= ui.stdout.columns), ui.frame());
+    };
+    try {
+      await eventually(() => ui.frame().includes('4 traces'));
+      fits(); ui.stdin.write('\r');
+      await eventually(() => ui.frame().includes('Bash reported an error'));
+      fits(); ui.stdin.write('\r');
+      await eventually(() => ui.frame().includes('Expected: 200'));
+      assert.ok(ui.frame().includes('line 6'), ui.frame());
+      fits(); ui.stdin.write(']');
+      await eventually(() => ui.frame().includes('npm test -- checkout') && ui.frame().includes('line 5'));
+      ui.stdin.write('/');
+      await eventually(() => ui.frame().includes('/ ▏'));
+      ui.stdin.write('expired');
+      await eventually(() => ui.frame().includes('/ expired'));
+      assert.equal(exports, 0, 'Typing e in search must not export');
+      ui.stdin.write('\r'); await delay(30);
+      ui.stdin.write('\x10');
+      await eventually(() => ui.frame().includes('COMMAND PALETTE'));
+      ui.stdin.write('\x1b');
+      await eventually(() => ui.frame().includes('/ expired') && ui.frame().includes('Context') === false);
+      ui.stdin.write('\x10');
+      await eventually(() => ui.frame().includes('COMMAND PALETTE'));
+      fits(); ui.stdin.write('diagnostics');
+      await eventually(() => ui.frame().includes('Source diagnostics') && !ui.frame().includes('Refresh discovery'));
+      ui.stdin.write('\r');
+      await eventually(() => ui.frame().includes('SOURCE DIAGNOSTICS'));
+      ui.stdout.columns = 48; ui.stdout.rows = 12; ui.stdout.emit('resize');
+      await delay(60); fits();
+    } finally { ui.app.unmount(); await ui.app.waitUntilExit(); }
+  });
+}
 
 test('search matches every term and source filters independently', () => {
   const a = { ...session('a'), title: 'Fix request parser', project: 'alpha' };
@@ -78,9 +124,13 @@ for (const columns of [80, 120, 160]) {
       await eventually(() => ui.frame().split('\n').some(line => line.includes('›') && line.includes('Trace beta')));
       ui.stdin.write('\r');
       await eventually(() => inspected === 'beta' && ui.frame().includes('TRACE INSPECTOR'));
-      await eventually(() => ui.frame().includes('    code indentation is preserved'));
+      await eventually(() => ui.frame().includes('OBSERVATIONS'));
+      ui.stdin.write('2');
+      await eventually(() => ui.frame().includes('Context hidden') && ui.frame().includes('    code indentation is preserved'));
       ui.stdin.write('e');
       await eventually(() => exported === 'beta' && ui.frame().includes('Saved'));
+      ui.stdin.write('q');
+      await eventually(() => ui.frame().includes('OBSERVATIONS'));
       ui.stdin.write('q');
       await eventually(() => ui.frame().includes('LOCAL TRACES'));
       ui.stdin.write('d');

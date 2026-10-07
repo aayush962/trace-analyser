@@ -9,6 +9,7 @@ import type { ScanResult, Session, Transcript } from './core/types.js';
 import { cell, clip } from './ui/format.js';
 import { normalizeTranscript } from './core/normalize.js';
 import { readSnapshot } from './core/reading.js';
+import { demoTraces, scanDemo } from './demo.js';
 
 const program = new Command();
 // Commander parses duplicated global flags on the parent. Carry only explicitly
@@ -38,7 +39,8 @@ function common(command: Command): Command {
     .option('--include-archived', 'include archived sessions').option('--include-children', 'include child/subagent sessions')
     .option('--timeout <seconds>', 'discovery time budget', integer, 30).option('--max-files <count>', 'file budget', integer, 100_000)
     .option('--no-cache', 'do not read or write the metadata index').option('--json', 'emit structured JSON')
-    .option('--plain', 'line-oriented output instead of the interactive browser').option('--no-color', 'disable color');
+    .option('--plain', 'line-oriented output instead of the interactive browser').option('--no-color', 'disable color')
+    .option('--no-motion', 'disable terminal animations');
 }
 function options(raw: any): DiscoveryOptions { return { ...raw, roots: raw.root, signal: controller.signal }; }
 function outputJson(value: unknown) { process.stdout.write(JSON.stringify(value, null, 2) + '\n'); }
@@ -93,20 +95,24 @@ async function selectSession(id: string, raw: any): Promise<Session> {
   return found[0]!;
 }
 async function launch(raw: any) {
-  if (!process.stdin.isTTY || !process.stdout.isTTY || raw.plain || raw.json) { printList(await discover(options(raw)), raw); return; }
+  const demo = raw.demo ? demoTraces() : null;
+  if (!process.stdin.isTTY || !process.stdout.isTTY || raw.plain || raw.json) { printList(demo ? await scanDemo(demo, () => {}, controller.signal) : await discover(options(raw)), raw); return; }
   if (raw.color === false) process.env.NO_COLOR = '1';
   const [{ render }, { App }] = await Promise.all([import('ink'), import('./ui/App.js')]);
   let activeSignal = controller.signal;
-  const onScan = (emit: (s: Session) => void, signal: AbortSignal) => { activeSignal = signal; return discover({ ...options(raw), signal }, emit); };
-  const onInspect = (s: Session) => inspect(s, { ...options(raw), signal: activeSignal });
+  const onScan = (emit: (s: Session) => void, signal: AbortSignal) => { activeSignal = signal; return demo ? scanDemo(demo, emit, signal) : discover({ ...options(raw), signal }, emit); };
+  const onInspect = (s: Session) => demo ? Promise.resolve(demo.find(t => t.session.id === s.id)!) : inspect(s, { ...options(raw), signal: activeSignal });
   const onExport = async (s: Session) => exportTranscript(await onInspect(s), path.resolve(`trace-${s.id}-${Date.now()}.trace.json`), os.homedir());
-  const app = render(<App onScan={onScan} onInspect={onInspect} onExport={onExport} initialAgent={raw.agent} />,
+  const app = render(<App onScan={onScan} onInspect={onInspect} onExport={onExport} initialAgent={raw.agent} demo={!!demo}
+    reducedMotion={raw.motion === false || process.env.TRACE_READER_REDUCED_MOTION === '1' || process.env.TERM === 'dumb' || !!process.env.CI} />,
     { alternateScreen: true, incrementalRendering: true, maxFps: 20, exitOnCtrlC: false });
   await app.waitUntilExit();
 }
 
 program.name('trace-reader').description('Find and read saved agent sessions. Local, offline, no account required.').version('0.1.0');
 common(program).action(launch);
+common(program.command('demo').description('Explore a synthetic session library; no local stores or AI accessed'))
+  .action(raw => launch({ ...raw, demo: true }));
 common(program.command('list').description('List saved sessions'))
   .option('--limit <count>', 'maximum output rows', integer, 50).option('--since <date-or-duration>', 'updated since 7d, 24h, or an ISO date')
   .option('--project <text>', 'filter project name').action(async raw => printList(await discover(options(raw)), raw));

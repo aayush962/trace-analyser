@@ -19,6 +19,7 @@
     "dev": "tsx src/cli.tsx",
     "build": "tsc",
     "start": "node dist/cli.js",
+    "demo": "tsx src/cli.tsx demo",
     "schema:generate": "node --import tsx scripts/generate-schema.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",

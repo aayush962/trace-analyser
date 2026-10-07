@@ -7,6 +7,8 @@ import { exportTranscript } from './core/package.js';
 import { safeText, singleLine } from './core/safe.js';
 import type { ScanResult, Session, Transcript } from './core/types.js';
 import { cell, clip } from './ui/format.js';
+import { normalizeTranscript } from './core/normalize.js';
+import { readSnapshot } from './core/reading.js';
 
 const program = new Command();
 // Commander parses duplicated global flags on the parent. Carry only explicitly
@@ -50,7 +52,7 @@ function sinceTime(value: string | undefined): number {
 function filter(sessions: Session[], raw: any): Session[] {
   const since = sinceTime(raw.since);
   const terms = (raw.query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
-  return sessions.filter(s => (!raw.project || (s.project ?? s.cwd ?? '').toLowerCase().includes(raw.project.toLowerCase()))
+  return sessions.filter(s => (!raw.agent || s.agent === raw.agent) && (!raw.project || (s.project ?? s.cwd ?? '').toLowerCase().includes(raw.project.toLowerCase()))
     && (!since || Date.parse(s.updatedAt ?? s.startedAt ?? '') >= since)
     && terms.every((q: string) => [s.title, s.project, s.preview, s.nativeId, s.agent].join(' ').toLowerCase().includes(q)));
 }
@@ -117,6 +119,22 @@ common(program.command('search <query>').description('Search session titles and 
   .option('--limit <count>', 'maximum output rows', integer, 50).action(async (query, raw) => printList(await discover(options(raw)), { ...raw, query }));
 common(program.command('inspect <id>').description('Read a local session and its coverage warnings'))
   .option('--limit <count>', 'maximum preview events', integer, 40).action(async (id, raw) => printTranscript(await inspect(await selectSession(id, raw), options(raw)), raw));
+common(program.command('read [id]').description('Generate an evidence-linked local reading without an AI request'))
+  .option('--file <path>', 'read an explicit trace file instead of a local ID')
+  .action(async (id, raw) => {
+    if (Boolean(id) === Boolean(raw.file)) throw new InvalidArgumentError('Provide exactly one session ID or --file PATH.');
+    const trace = raw.file ? await importFile(raw.file, options(raw)) : await inspect(await selectSession(id, raw), options(raw));
+    const snapshot = normalizeTranscript(trace), reading = readSnapshot(snapshot);
+    if (raw.json) outputJson({ schemaVersion: 'trace-reader-reading/1', mode: 'local-rules', sessionId: trace.session.id,
+      partial: trace.truncated, warnings: trace.warnings, coverage: snapshot.capture.coverage, reading, evidence: snapshot.events.map(e => ({ id: e.id, source: trace.events[e.sequence].source })) });
+    else {
+      process.stdout.write(`${singleLine(trace.session.title)}\nLocal observations · no model request\n\n${reading.messages} message events · ${reading.tools} tools · ${reading.errors} reported errors\n`);
+      for (const finding of reading.observations) process.stdout.write(`\n${singleLine(finding.title)}\n${singleLine(finding.detail)}\nEvidence: ${finding.eventIds.join(', ')}\n`);
+      if (!reading.observations.length) process.stdout.write('\nNo matching patterns in the retained events. This does not establish success.\n');
+      if (trace.truncated) process.stdout.write('\nPartial capture. Inspect the source diagnostics for omissions.\n');
+    }
+    if (trace.truncated) process.exitCode = 4;
+  });
 program.command('import <file>').description('Preview a selected trace file; nothing is uploaded')
   .option('--json', 'emit full parsed data').option('--limit <count>', 'maximum preview events', integer, 40)
   .action(async (file, raw) => { try { printTranscript(await importFile(file, options(raw)), raw); } catch (e) { process.exitCode = 3; throw e; } });

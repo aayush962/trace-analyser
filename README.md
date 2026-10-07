@@ -1,6 +1,6 @@
 # Trace reader
 
-A local terminal browser for saved coding-agent sessions. Find the conversation, see what evidence it contains, inspect it, and export it for the reader we're building next.
+A local terminal reader for saved coding-agent sessions. Find a conversation, read its recorded observations, and jump from each finding to the supporting events.
 
 **Developer preview · local only · no account or model API key.** No network requests are made by discovery, inspection, or export.
 
@@ -13,6 +13,16 @@ npm ci
 npm run build
 npm start
 ```
+
+Try the complete reading flow with synthetic data, without scanning your machine:
+
+```sh
+npm run demo
+# Or after building:
+node dist/cli.js demo --no-motion
+```
+
+![Reading view, captured from Ink with synthetic demo data](docs/images/terminal-reading.png)
 
 For a global command from this checkout:
 
@@ -27,22 +37,29 @@ The package is **not published**. `npx trace-reader` is the intended release exp
 
 ## Browse
 
-The TUI opens in an alternate screen and restores the terminal when it exits. It has date-grouped sessions, source colors, a responsive metadata preview, and visible action buttons. It is keyboard-first; mouse clicking is not implemented.
+The TUI opens in an alternate screen and restores the terminal when it exits. A warm accent marks controls, teal marks user content, and coral marks explicitly reported errors. Wide terminals get a preview rail and a split reading view; narrow terminals stack the content. It is keyboard-first; mouse clicking is not implemented.
 
 | Key | Action |
 | --- | --- |
 | `↑` / `↓`, `j` / `k` | Move between sessions |
 | `/` | Search titles, project names, IDs, and preview metadata |
 | `f` | Cycle source filters |
-| `Enter` | Inspect the transcript |
+| `Enter` | Open the reading; on an observation, inspect its evidence |
+| `Ctrl+P` | Searchable command palette |
+| `1` / `2` / `3`, `Tab` | Reading / event timeline / source data |
 | `e` | Export the current session to a `.trace.json` file in the working directory |
 | `r` | Refresh discovery |
 | `d` | Source diagnostics |
 | `?` | Help |
+| `m` | Toggle reduced motion |
 | `Esc` | Back / clear search |
 | `q` | Back, or quit from the list |
 
-In the inspector, arrows scroll, Space/Page Down advances, and `g`/`G` jumps to the beginning/end. Exact counts are shown only when the reader has enough data; `—` means unknown in the TUI (`…` in plain lists). Opening a session reads more of its contents and updates the inspector counts.
+In the reading, arrows choose observations and Enter opens evidence. `o` opens the first user message and `l` the last assistant message. In the timeline, arrows move by event, `/` searches content, `c` includes context, and `[` / `]` moves between an observation's evidence events. Space/Page Down scrolls a long output; `g`/`G` jumps to the first/last event. `p` plays or pauses event replay at 1.1 seconds per event (not original wall-clock timing). Escape returns to the reading, then the library.
+
+Activity indicators run only during work. Event transitions are brief and never delay text. Idle screens have no animation timer. `--no-motion` or `TRACE_READER_REDUCED_MOTION=1` disables animations and replay; CI and dumb terminals also default to reduced motion. The palette can change the setting during a session.
+
+The reading currently uses **local deterministic rules, not an AI model**. It identifies structured reported errors, three or more identical tool calls, calls without a matched result, and uncertain result linkage. Every observation links to retained events. Repetition does not prove wasted work; absence of observations does not prove success. Counts describe retained message events, not necessarily distinct native messages. Time is the span between retained timestamps, not measured agent execution time. Unknown discovery counts are shown as `—`.
 
 ## Commands
 
@@ -51,6 +68,9 @@ trace-reader list --agent codex --since 7d --json
 trace-reader list --project trace-reader --limit 100 --no-cache
 trace-reader search "auth retry"
 trace-reader inspect LOCAL_ID
+trace-reader read LOCAL_ID --json
+trace-reader read --file ./session.jsonl
+trace-reader demo
 trace-reader scan --root ~/Downloads --recursive
 trace-reader scan --root /custom/claude/projects --agent claude-code
 trace-reader import ./session.jsonl
@@ -94,6 +114,8 @@ There is no universal trace format. Known-store discovery does not crawl the who
 - Export creates a private file, refuses accidental overwrite, and prevents replacing its source. `--force` atomically replaces an existing destination. Nothing is uploaded.
 
 The first portable JSON schema is provisional. It is suitable for local round-trips; a browser importer and backend still need their own validation and compatibility gates. A snapshot digest is an identity aid, not a signature or authorization mechanism.
+
+The reading uses an internal `trace-reader/2-draft.1` projection with native tool-call IDs, source record references and explicit unknown states. The initial mappings cover Claude/Codex messages and tool events; other adapters get a conservative projection of what they expose. Unknown context/usage records are retained, not interpreted. Source-local IDs and extracted fragments are labeled. This is not a complete native normalization or a v2 export migration: `export` still produces sanitized v1 packages. See [the schema proposal](docs/normalized-schema.md) and [terminal design notes](docs/terminal-design.md).
 
 ## Development
 

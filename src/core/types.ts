@@ -11,6 +11,8 @@ export interface Session {
   archived: boolean; parentId: string | null;
   preview: string; warnings: string[];
   evidence: 'messages + tools' | 'messages' | 'metadata only';
+  /** Discovery evidence, not a quality score. Missing means unknown (older metadata). */
+  activity?: 'empty' | 'present' | 'unknown';
   locator: Locator;
 }
 export interface TraceEvent {
@@ -35,6 +37,6 @@ export interface Adapter {
 }
 export interface ScanResult {
   schemaVersion: 'trace-reader-cli/1'; sessions: Session[];
-  scan: { complete: boolean; rootsChecked: number; filesScanned: number; skipped: number; durationMs: number; stopReason: string };
+  scan: { complete: boolean; rootsChecked: number; filesScanned: number; skipped: number; durationMs: number; stopReason: string; emptyHidden?: number };
   diagnostics: Diagnostic[];
 }

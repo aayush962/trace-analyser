@@ -37,6 +37,7 @@ function common(command: Command): Command {
     .option('--root <path...>', 'read explicit roots instead of the default stores')
     .option('--recursive', 'recurse through an explicit root (native stores always recurse)')
     .option('--include-archived', 'include archived sessions').option('--include-children', 'include child/subagent sessions')
+    .option('--include-empty', 'show sessions with confirmed empty captures')
     .option('--timeout <seconds>', 'discovery time budget', integer, 30).option('--max-files <count>', 'file budget', integer, 100_000)
     .option('--no-cache', 'do not read or write the metadata index').option('--json', 'emit structured JSON')
     .option('--plain', 'line-oriented output instead of the interactive browser').option('--no-color', 'disable color')
@@ -70,6 +71,7 @@ function printList(result: ScanResult, raw: any) {
     for (const s of shown) process.stdout.write(`${cell(s.id, 18)}${cell(s.agent, 13)}${cell(s.title, titleWidth)}${cell(s.project ?? '—', 20)}${s.messages ?? '…'}\n`);
     if (!shown.length) process.stdout.write('No saved sessions found in the folders checked. Try scan --root PATH --recursive or import FILE.\n');
     process.stdout.write(`\n${shown.length} of ${all.length} sessions · ${result.scan.rootsChecked} roots · ${(result.scan.durationMs / 1000).toFixed(1)}s · ${result.scan.complete ? 'scan complete' : 'partial scan'}\n`);
+    if (result.scan.emptyHidden) process.stdout.write(`${result.scan.emptyHidden} empty sessions hidden · --include-empty to show\n`);
     if (!result.scan.complete) process.stderr.write(`Discovery: ${singleLine(result.scan.stopReason)}. Run doctor for details.\n`);
   }
   if (!result.scan.complete) process.exitCode = controller.signal.aborted ? 130 : 4;
@@ -88,7 +90,7 @@ function printTranscript(trace: Transcript, raw: any) {
   if (trace.truncated) process.exitCode = 4;
 }
 async function selectSession(id: string, raw: any): Promise<Session> {
-  const result = await discover({ ...options(raw), includeArchived: true, includeChildren: true });
+  const result = await discover({ ...options(raw), includeArchived: true, includeChildren: true, includeEmpty: true });
   const found = result.sessions.filter(s => s.id.startsWith(id) || s.nativeId === id);
   if (found.length > 1) throw new Error('Ambiguous session ID. Use the full local ID from list.');
   if (!found.length) throw new Error(`Session not found: ${singleLine(id)}${!result.scan.complete ? ' (discovery was incomplete; run doctor)' : ''}`);

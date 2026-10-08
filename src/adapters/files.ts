@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { traceActivity } from '../core/activity.js';
 import { stat } from 'node:fs/promises';
 import type { Adapter, Agent, Root, ScanContext, Session, TraceEvent, Transcript } from '../core/types.js';
 import { contentText, iso, projectName, safeText, singleLine, stableId } from '../core/safe.js';
@@ -231,6 +232,7 @@ function makeAdapter(agent: 'claude-code' | 'codex'): Adapter {
       bytes: result.bytes, archived: root.label === 'archived_sessions' || file.split(path.sep).includes('archived_sessions'),
       parentId: parsed.parentId, preview: parsed.title, warnings,
       evidence: parsed.tools ? 'messages + tools' : parsed.messages ? 'messages' : 'metadata only',
+      activity: traceActivity(parsed.events, incomplete),
       locator: { path: file, root: root.path, format },
     };
     return { session, events: parsed.events.slice(0, ctx.maxEvents), warnings, truncated: incomplete };

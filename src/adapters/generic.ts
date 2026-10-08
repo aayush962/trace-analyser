@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { traceActivity } from '../core/activity.js';
 import { stat } from 'node:fs/promises';
 import { readJson, walkFiles, diagnostic } from '../core/io.js';
 import { contentText, iso, projectName, singleLine, stableId } from '../core/safe.js';
@@ -51,6 +52,7 @@ export async function importGeneric(file: string, ctx: ScanContext): Promise<Tra
     parentId: isPackage && typeof data.session.parentId === 'string' ? data.session.parentId : null,
     preview: isPackage ? data.session.preview : singleLine(events.find(e => e.role === 'user')?.text ?? '').slice(0, 300), warnings: isPackage ? data.session.warnings : warnings,
     evidence: isPackage ? data.session.evidence : events.some(e => e.kind.startsWith('tool')) ? 'messages + tools' : 'messages',
+    activity: traceActivity(events, truncated),
     locator: { path: file, root: path.dirname(file), format: isPackage ? 'trace-reader' : 'generic-json' },
   };
   return { session, events, warnings, truncated };

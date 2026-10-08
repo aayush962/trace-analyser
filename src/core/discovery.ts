@@ -1,4 +1,5 @@
 import os from 'node:os';
+import { isEmptySession } from './activity.js';
 import path from 'node:path';
 import { stat, realpath, open, readFile, mkdir, writeFile, rename, unlink } from 'node:fs/promises';
 import { claudeAdapter, codexAdapter } from '../adapters/files.js';
@@ -9,7 +10,7 @@ import type { Adapter, Agent, Root, ScanContext, ScanResult, Session, Transcript
 
 export const adapters: Adapter[] = [claudeAdapter, codexAdapter, cursorAdapter, hermesAdapter, genericAdapter];
 export interface DiscoveryOptions {
-  roots?: string[]; agent?: string; includeArchived?: boolean; includeChildren?: boolean;
+  roots?: string[]; agent?: string; includeArchived?: boolean; includeChildren?: boolean; includeEmpty?: boolean;
   maxFiles?: number; maxDepth?: number; timeout?: number; cache?: boolean; recursive?: boolean;
   home?: string; env?: Record<string, string | undefined>; signal?: AbortSignal;
 }
@@ -31,7 +32,7 @@ export function cachePath(): string {
 export async function clearCache(): Promise<void> { await unlink(cachePath()).catch(e => { if (e.code !== 'ENOENT') throw e; }); }
 function visible(s: Session, options: DiscoveryOptions): boolean {
   return (!options.agent || s.agent === options.agent) && (options.includeArchived === true || !s.archived)
-    && (options.includeChildren === true || !s.parentId);
+    && (options.includeChildren === true || !s.parentId) && (options.includeEmpty === true || !isEmptySession(s));
 }
 async function detectedAdapter(file: string): Promise<Adapter | undefined> {
   if (file.endsWith('.trace.json')) return genericAdapter;
@@ -63,7 +64,7 @@ export async function discover(options: DiscoveryOptions = {}, onSession?: (sess
       const info = await stat(cachePath());
       if (info.size < 8 * 1024 * 1024) {
         const cached = JSON.parse(await readFile(cachePath(), 'utf8'));
-        if (cached.version === 1 && Array.isArray(cached.sessions)) for (const s of cached.sessions) {
+        if (cached.version === 2 && Array.isArray(cached.sessions)) for (const s of cached.sessions) {
           if (s && typeof s.id === 'string' && typeof s.title === 'string' && s.locator && visible(s, options)) onSession({ ...s, warnings: [...(s.warnings ?? []), 'Cached metadata; checking source…'] });
         }
       }
@@ -121,14 +122,15 @@ export async function discover(options: DiscoveryOptions = {}, onSession?: (sess
       const target = cachePath();
       await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
       const temp = `${target}.${process.pid}.tmp`;
-      await writeFile(temp, JSON.stringify({ version: 1, sessions: all.slice(0, 10_000).map(s => ({ ...s, preview: s.title })) }), { mode: 0o600 });
+      await writeFile(temp, JSON.stringify({ version: 2, sessions: all.slice(0, 10_000).map(s => ({ ...s, preview: s.title })) }), { mode: 0o600 });
       await rename(temp, target);
     } catch { diagnostic(ctx, 'generic', cachePath(), 'Metadata cache unavailable; discovery still works. Use --no-cache to disable it.', 'info'); }
   }
   const stopReason = ctx.signal.aborted ? 'cancelled' : Date.now() >= ctx.deadline ? 'time budget reached' : ctx.scanned >= ctx.maxFiles ? 'file budget reached'
     : ctx.diagnostics.some(d => d.level !== 'info') ? 'some sources could not be read completely' : 'finished';
   return { schemaVersion: 'trace-reader-cli/1', sessions: all.filter(s => visible(s, options)),
-    scan: { complete: stopReason === 'finished', rootsChecked, filesScanned: ctx.scanned, skipped: ctx.skipped, durationMs: Date.now() - start, stopReason }, diagnostics: ctx.diagnostics };
+    scan: { complete: stopReason === 'finished', rootsChecked, filesScanned: ctx.scanned, skipped: ctx.skipped, durationMs: Date.now() - start, stopReason,
+      emptyHidden: options.includeEmpty ? 0 : all.filter(s => isEmptySession(s) && visible(s, { ...options, includeEmpty: true })).length }, diagnostics: ctx.diagnostics };
 }
 export async function inspect(session: Session, options: DiscoveryOptions = {}): Promise<Transcript> {
   const adapter = ['trace-reader', 'generic-json'].includes(session.locator.format) ? genericAdapter : adapters.find(a => a.manifest.id === session.agent);

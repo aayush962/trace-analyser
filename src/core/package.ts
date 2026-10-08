@@ -36,7 +36,7 @@ function canonical(value: unknown): string {
   return JSON.stringify(value) ?? 'null';
 }
 export function makePackage(transcript: Transcript, home: string) {
-  const { locator: _locator, id: _localId, ...session } = transcript.session;
+  const { locator: _locator, id: _localId, activity: _discoveryActivity, ...session } = transcript.session;
   const sanitized = scrub({ session, events: transcript.events, warnings: transcript.warnings, truncated: transcript.truncated }, home);
   const content = sanitized.value as object;
   const snapshotDigest = createHash('sha256').update(canonical(content)).digest('hex');

@@ -7,6 +7,7 @@ import os from 'node:os';
 import { context, discover, importFile, inspect } from '../src/core/discovery.js';
 import { readJsonLines } from '../src/core/io.js';
 import { exportTranscript, makePackage, scrub } from '../src/core/package.js';
+import { traceActivity } from '../src/core/activity.js';
 
 async function fixture(t: any) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'trace-reader-core-'));
@@ -19,6 +20,36 @@ async function fixture(t: any) {
   ].map(r => JSON.stringify(r)).join('\n'));
   return { root, file };
 }
+
+test('empty capture filtering preserves tool-only, unfamiliar and incomplete file traces', async t => {
+  const { root } = await fixture(t);
+  const meta = (id: string) => ({ type: 'session_meta', payload: { id } });
+  const cases = {
+    empty: [meta('empty')],
+    unfamiliar: [meta('unfamiliar'), { type: 'future_event', payload: { content: 'unknown' } }],
+    tool: [meta('tool'), { type: 'response_item', payload: { type: 'function_call_output', call_id: 'call', output: '' } }],
+  };
+  for (const [name, rows] of Object.entries(cases)) await writeFile(path.join(root, `${name}.jsonl`), rows.map(row => JSON.stringify(row)).join('\n'));
+  await writeFile(path.join(root, 'partial.jsonl'), JSON.stringify(meta('partial')) + '\n{"unfinished":');
+  const scan = await discover({ roots: [root], agent: 'codex', cache: false });
+  assert.equal(scan.scan.emptyHidden, 1);
+  assert.deepEqual(scan.sessions.map(s => s.nativeId).sort(), ['example', 'partial', 'tool', 'unfamiliar']);
+  assert.equal(scan.sessions.find(s => s.nativeId === 'partial')?.activity, 'unknown');
+  assert.equal(scan.sessions.find(s => s.nativeId === 'tool')?.activity, 'present');
+  assert.equal(traceActivity([], true), 'unknown');
+  const args = ['--import', 'tsx', 'src/cli.tsx', 'list', '--root', path.join(root, 'empty.jsonl'), '--no-cache', '--json'];
+  const hidden = spawnSync(process.execPath, args, { encoding: 'utf8', timeout: 10_000 });
+  assert.equal(hidden.status, 0, hidden.stderr);
+  assert.equal(JSON.parse(hidden.stdout).sessions.length, 0);
+  assert.equal(JSON.parse(hidden.stdout).scan.emptyHidden, 1);
+  const shown = spawnSync(process.execPath, [...args, '--include-empty'], { encoding: 'utf8', timeout: 10_000 });
+  assert.equal(shown.status, 0, shown.stderr);
+  const empty = JSON.parse(shown.stdout).sessions[0];
+  assert.equal(empty.activity, 'empty');
+  const direct = spawnSync(process.execPath, ['--import', 'tsx', 'src/cli.tsx', 'inspect', empty.id, '--root', path.join(root, 'empty.jsonl'), '--no-cache', '--json'], { encoding: 'utf8', timeout: 10_000 });
+  assert.equal(direct.status, 0, direct.stderr);
+  assert.equal(JSON.parse(direct.stdout).session.nativeId, 'empty', 'direct inspection still locates hidden sessions');
+});
 
 test('explicit native import, redaction, package export and re-import preserve semantic digest', async t => {
   const { root, file } = await fixture(t);

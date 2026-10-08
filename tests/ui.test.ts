@@ -3,12 +3,13 @@ import { PassThrough, Writable } from 'node:stream';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createElement } from 'react';
-import { render } from 'ink';
+import { render, Text } from 'ink';
 import stringWidth from 'string-width';
 import { safeText } from '../src/core/safe.js';
 import type { ScanResult, Session } from '../src/core/types.js';
 import { App, type AppProps } from '../src/ui/App.js';
-import { cell, clip, clipLine, filterSessions, wrap } from '../src/ui/format.js';
+import { cell, clip, clipLine, filterSessions, windowCells, wrap } from '../src/ui/format.js';
+import { Marquee } from '../src/ui/motion.js';
 import { demoTraces, scanDemo } from '../src/demo.js';
 
 const session = (id: string, date = '2026-10-05T12:00:00Z'): Session => ({
@@ -45,6 +46,9 @@ test('terminal formatting strips executable controls and preserves graphemes wit
   assert.equal(stringWidth(cell('👩‍💻 trace', 8)), 8);
   assert.equal(clipLine('    const x = 1;', 80), '    const x = 1;');
   assert.deepEqual(wrap('  alpha\nbeta', 6), ['  alph', 'a', 'beta']);
+  assert.equal(windowCells('a你好👩‍💻éz', 2, 6), ' 好👩‍💻é');
+  assert.equal(windowCells('👩‍💻hello', 0, 1), ' ');
+  assert.equal(windowCells('\x1b]52;c;payload\x07abc', 1, 4), 'bc  ');
 });
 
 for (const columns of [80, 120, 160]) {
@@ -170,4 +174,26 @@ test('streamed discovery preserves selected trace identity when newer results ar
     await eventually(() => inspected.length > 0);
     assert.equal(inspected, 'older');
   } finally { ui.app.unmount(); await ui.app.waitUntilExit(); }
+});
+
+test('selected-title marquee pauses, pans within fixed cells, returns, and rests; reduced motion stays still', async () => {
+  const frames: string[] = [];
+  const stdout = Object.assign(new Writable({ write(chunk, _encoding, callback) { frames.push(safeText(chunk.toString()).trimEnd()); callback(); } }), { columns: 80, rows: 10, isTTY: true });
+  const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode() { return this; }, ref() {}, unref() {} });
+  const view = (reduced: boolean) => createElement(Text, {}, '[', createElement(Marquee, { text: 'abcdefghijkl', width: 8, active: true, reduced }), '] Export');
+  const app = render(view(false), { stdin, stdout, stderr: stdout, debug: true, interactive: true, patchConsole: false, kittyKeyboard: { mode: 'disabled' } });
+  try {
+    await delay(150);
+    const first = frames.at(-1)!;
+    assert.equal(first, '[abcdefg…] Export');
+    await delay(400); assert.equal(frames.at(-1), first, 'title initially pauses');
+    await delay(850); assert.notEqual(frames.at(-1), first, 'overflow becomes readable');
+    assert.ok(frames.every(frame => stringWidth(frame) === stringWidth(first)), 'action column never moves');
+    await delay(2200); assert.equal(frames.at(-1), first, 'returns to the beginning');
+    const count = frames.length;
+    await delay(250); assert.equal(frames.length, count, 'idle title has no perpetual animation');
+    app.rerender(view(true)); await delay(100);
+    const quiet = frames.length;
+    await delay(1250); assert.equal(frames.length, quiet, 'reduced motion never starts a timer');
+  } finally { app.unmount(); await app.waitUntilExit(); }
 });

@@ -1,6 +1,32 @@
 import { useEffect, useState } from 'react';
 import { Text } from 'ink';
 import { C } from './theme.js';
+import stringWidth from 'string-width';
+import { cell, windowCells } from './format.js';
+import { singleLine } from '../core/safe.js';
+
+/** A focused long title gets one gentle pan, then rests. No whole-table animation. */
+export function Marquee({ text, width, active, reduced = false }: { text: string; width: number; active: boolean; reduced?: boolean }) {
+  const value = singleLine(text);
+  const max = Math.max(0, stringWidth(value) - width);
+  const [offset, setOffset] = useState(0);
+  useEffect(() => {
+    setOffset(0);
+    if (!active || reduced || max <= 0) return;
+    let timer: ReturnType<typeof setTimeout>;
+    let step = 0;
+    let direction = 1;
+    const tick = () => {
+      step += direction;
+      setOffset(step);
+      if (step === max) { direction = -1; timer = setTimeout(tick, 1700); }
+      else if (step > 0) timer = setTimeout(tick, 90);
+    };
+    timer = setTimeout(tick, 1100);
+    return () => clearTimeout(timer);
+  }, [value, width, max, active, reduced]);
+  return <Text>{active && !reduced && offset > 0 ? windowCells(value, Math.min(offset, max), width) : cell(value, width)}</Text>;
+}
 
 /** Motion is restricted to a tiny active region; idle screens have no animation timer. */
 export function Activity({ label, reduced = false }: { label: string; reduced?: boolean }) {

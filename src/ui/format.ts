@@ -12,6 +12,22 @@ export const AGENT_COLORS: Record<Agent, string> = {
 };
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+/** Slice by terminal cells without cutting an emoji/combining sequence in half. */
+export function windowCells(value: string, offset: number, width: number): string {
+  let position = 0, out = '', used = 0;
+  for (const { segment } of segmenter.segment(singleLine(value))) {
+    const size = stringWidth(segment);
+    const end = position + size;
+    if (end <= offset) { position = end; continue; }
+    if (position < offset) {
+      const space = Math.min(width, end - offset);
+      out += ' '.repeat(space); used += space; position = end; continue;
+    }
+    if (used + size > width) break;
+    out += segment; used += size; position = end;
+  }
+  return out + ' '.repeat(Math.max(0, width - used));
+}
 export function clip(value: unknown, width: number): string {
   return clipLine(singleLine(value), width);
 }

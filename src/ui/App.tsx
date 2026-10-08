@@ -2,16 +2,20 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput, useWindowSize } from 'ink';
 import { AGENTS, type ScanResult, type Session, type Transcript } from '../core/types.js';
 import { safeText, singleLine } from '../core/safe.js';
-import { AGENT_COLORS, AGENT_LABELS, bytesLabel, cell, clip, clipLine, filterSessions, groupRows, sortSessions, timeLabel, wrap } from './format.js';
+import { isEmptySession } from '../core/activity.js';
+import { AGENT_LABELS, cell, clip, clipLine, filterSessions, groupRows, sortSessions, wrap } from './format.js';
 import { C } from './theme.js';
 import { Activity } from './motion.js';
 import { Reader } from './Reader.js';
+import { Library, ROW_ACTIONS, type RowAction } from './Library.js';
+import { libraryLayout } from './library-layout.js';
 
 export interface AppProps {
   onScan: (onSession: (session: Session) => void, signal: AbortSignal) => Promise<ScanResult>;
   onInspect: (session: Session) => Promise<Transcript>;
   onExport: (session: Session) => Promise<string>;
   initialAgent?: string;
+  initialIncludeEmpty?: boolean;
   reducedMotion?: boolean;
   demo?: boolean;
 }
@@ -31,7 +35,7 @@ function Filler({ count }: { count: number }) {
   return <>{Array.from({ length: Math.max(0, count) }, (_, index) => <Text key={index}> </Text>)}</>;
 }
 
-export function App({ onScan, onInspect, onExport, initialAgent, reducedMotion = false, demo = false }: AppProps) {
+export function App({ onScan, onInspect, onExport, initialAgent, initialIncludeEmpty = false, reducedMotion = false, demo = false }: AppProps) {
   const { exit } = useApp();
   const { columns, rows } = useWindowSize();
   const width = Math.max(1, columns || 80);
@@ -52,6 +56,10 @@ export function App({ onScan, onInspect, onExport, initialAgent, reducedMotion =
   const [inspected, setInspected] = useState<Session | null>(null);
   const [scroll, setScroll] = useState(0);
   const [listScroll, setListScroll] = useState(0);
+  const [rowAction, setRowAction] = useState<RowAction>('inspect');
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
+  const [oldest, setOldest] = useState(false);
+  const [includeEmpty, setIncludeEmpty] = useState(initialIncludeEmpty);
   const [motionOff, setMotionOff] = useState(reducedMotion);
   const [commandQuery, setCommandQuery] = useState('');
   const [commandIndex, setCommandIndex] = useState(0);
@@ -65,6 +73,7 @@ export function App({ onScan, onInspect, onExport, initialAgent, reducedMotion =
     const found = new Map<string, Session>();
     let dirty = false;
     setScanning(true);
+    setResult(null);
     setNotice('');
     const flush = () => {
       if (dirty && !controller.signal.aborted) {
@@ -91,17 +100,20 @@ export function App({ onScan, onInspect, onExport, initialAgent, reducedMotion =
     return () => { controller.abort(); clearInterval(timer); };
   }, [onScan, refresh]);
 
-  const filtered = useMemo(() => filterSessions(sessions, query, agent), [sessions, query, agent]);
+  const librarySessions = useMemo(() => includeEmpty ? sessions : sessions.filter(s => !isEmptySession(s)), [sessions, includeEmpty]);
+  const emptyCount = useMemo(() => sessions.filter(isEmptySession).length, [sessions]);
+  const filtered = useMemo(() => {
+    const matches = filterSessions(librarySessions, query, agent);
+    return oldest ? [...matches].reverse() : matches;
+  }, [librarySessions, query, agent, oldest]);
   const selectedIndex = Math.max(0, filtered.findIndex(session => session.id === selectedId));
   const selected = filtered[selectedIndex];
+  useEffect(() => { setRowAction('inspect'); }, [selected?.id]);
   useEffect(() => {
-    if (!selectedId && filtered[0]) setSelectedId(filtered[0].id);
-  }, [selectedId, filtered]);
+    if (filtered[0] && (!selectedId || !scanning && !filtered.some(session => session.id === selectedId))) setSelectedId(filtered[0].id);
+  }, [selectedId, filtered, scanning]);
   const grouped = useMemo(() => groupRows(filtered), [filtered]);
-  const sidePreview = width >= 112;
-  const sideWidth = sidePreview ? Math.min(52, Math.floor(width * 0.31)) : 0;
-  const listWidth = width - 2 - (sidePreview ? sideWidth + 3 : 0);
-  const bodyHeight = Math.max(1, height - 10);
+  const bodyHeight = libraryLayout(width, height, detailsExpanded).body;
   const selectedRow = grouped.findIndex(row => row.kind === 'session' && row.session.id === selected?.id);
   const visibleStart = Math.min(Math.max(0, grouped.length - bodyHeight), Math.max(0,
     selectedRow < listScroll ? selectedRow : selectedRow >= listScroll + bodyHeight ? selectedRow - bodyHeight + 1 : listScroll));
@@ -166,6 +178,9 @@ export function App({ onScan, onInspect, onExport, initialAgent, reducedMotion =
     { name: 'Change source filter', hint: 'Cycle available harnesses', key: 'f', run: () => { setAgent(sourceFilters[(sourceFilters.indexOf(agent) + 1) % sourceFilters.length]); setSelectedId(null); setScreen('list'); } },
     { name: 'Refresh discovery', hint: 'Read the local stores again', key: 'r', run: () => { setScreen('list'); if (!scanning) setRefresh(v => v + 1); } },
     { name: 'Source diagnostics', hint: 'Coverage, locations and warnings', key: 'd', run: () => { setScreen('diagnostics'); setScroll(0); } },
+    { name: 'Toggle row details', hint: 'Source location, coverage and preview', key: 'Space', run: () => { setDetailsExpanded(v => !v); setScreen('list'); } },
+    { name: 'Change sort order', hint: 'Newest or oldest sessions first', key: 's', run: () => { setOldest(v => !v); setListScroll(0); setScreen('list'); } },
+    { name: includeEmpty ? 'Hide empty sessions' : 'Show empty sessions', hint: `${emptyCount} confirmed empty · unreadable traces stay visible`, key: 'v', run: () => { setIncludeEmpty(v => !v); setNotice(''); setScreen('list'); } },
     { name: motionOff ? 'Enable animations' : 'Reduce motion', hint: 'Quiet idle screens in either mode', key: 'm', run: () => { setMotionOff(v => !v); setScreen(previousScreen.current); } },
     { name: 'Keyboard guide', hint: 'Learn the controls', key: '?', run: () => setScreen('help') },
   ].filter(command => command.name.toLowerCase().includes(commandQuery.toLowerCase()));
@@ -191,7 +206,7 @@ export function App({ onScan, onInspect, onExport, initialAgent, reducedMotion =
       return; // The reader owns its navigation and search keys.
     }
     if (searching) {
-      if (key.escape || key.return) { setSearching(false); return; }
+      if (key.escape || key.return) { setSearching(false); setRowAction('inspect'); return; }
       if (key.backspace || key.delete) setQuery(value => Array.from(value).slice(0, -1).join(''));
       else if (key.ctrl && input === 'u') setQuery('');
       else if (!key.ctrl && !key.meta && input) setQuery(value => (value + safeText(input).replace(/[\r\n\t]/g, ' ')).slice(0, 200));
@@ -206,6 +221,8 @@ export function App({ onScan, onInspect, onExport, initialAgent, reducedMotion =
     }
     if (key.escape) {
       if (screen !== 'list') backToList();
+      else if (rowAction !== 'inspect') setRowAction('inspect');
+      else if (detailsExpanded) setDetailsExpanded(false);
       else if (query) { setQuery(''); setSelectedId(null); }
       return;
     }
@@ -230,20 +247,36 @@ export function App({ onScan, onInspect, onExport, initialAgent, reducedMotion =
       setAgent(sourceFilters[(sourceFilters.indexOf(agent) + 1) % sourceFilters.length]);
       setSelectedId(null); setListScroll(0); setNotice(''); return;
     }
+    if (input === 's') { setOldest(v => !v); setListScroll(0); return; }
+    if (input === 'v') { setIncludeEmpty(v => !v); setNotice(''); return; }
+    if (input === ' ') { setDetailsExpanded(v => !v); return; }
+    if (key.leftArrow || key.rightArrow || key.tab || input === 'h' || input === 'l') {
+      const delta = key.leftArrow || input === 'h' || key.tab && key.shift ? -1 : 1;
+      setRowAction(current => ROW_ACTIONS[(ROW_ACTIONS.indexOf(current) + delta + ROW_ACTIONS.length) % ROW_ACTIONS.length]);
+      return;
+    }
     if (input === 'r' && !scanning) { setRefresh(value => value + 1); return; }
-    if (key.return && selected && !busy) { void inspect(selected); return; }
-    let next = selectedIndex;
-    if (key.downArrow || input === 'j') next++;
-    if (key.upArrow || input === 'k') next--;
-    if (key.pageDown || key.ctrl && input === 'd') next += Math.max(1, bodyHeight - 2);
-    if (key.pageUp || key.ctrl && input === 'u') next -= Math.max(1, bodyHeight - 2);
-    if (input === 'g' || key.home) next = 0;
-    if (input === 'G' || key.end) next = filtered.length - 1;
-    if (filtered.length && next !== selectedIndex) setSelectedId(filtered[Math.max(0, Math.min(filtered.length - 1, next))].id);
+    if (input === 'o' && selected && !busy) { void inspect(selected); return; }
+    if (key.return && selected && !busy) {
+      if (rowAction === 'inspect') void inspect(selected);
+      else if (rowAction === 'export') void exportTrace(selected);
+      else setDetailsExpanded(v => !v);
+      return;
+    }
+    const delta = key.downArrow || input === 'j' ? 1 : key.upArrow || input === 'k' ? -1
+      : key.pageDown || key.ctrl && input === 'd' ? Math.max(1, bodyHeight - 2)
+      : key.pageUp || key.ctrl && input === 'u' ? -Math.max(1, bodyHeight - 2) : 0;
+    const boundary = input === 'g' || key.home ? 0 : input === 'G' || key.end ? filtered.length - 1 : null;
+    if (filtered.length && (delta || boundary !== null)) {
+      setSelectedId(current => {
+        const index = Math.max(0, filtered.findIndex(session => session.id === current));
+        return filtered[Math.max(0, Math.min(filtered.length - 1, boundary ?? index + delta))].id;
+      });
+      setRowAction('inspect');
+    }
   });
 
-  const counts = useMemo(() => new Map(AGENTS.map(source => [source, sessions.filter(session => session.agent === source).length])), [sessions]);
-  const status = scanning ? `Discovering · ${sessions.length} found` : `${sessions.length} traces${result && !result.scan.complete ? ' · partial' : ''}`;
+  const status = scanning ? `Discovering · ${librarySessions.length} found` : `${librarySessions.length} traces${result && !result.scan.complete ? ' · partial' : ''}`;
   const heading = screen === 'list' ? 'LOCAL TRACES' : screen === 'inspect' ? 'TRACE INSPECTOR' : screen === 'help' ? 'KEYBOARD GUIDE' : screen === 'palette' ? 'COMMAND PALETTE' : 'SOURCE DIAGNOSTICS';
   const footerMessage = notice || (screen === 'list'
     ? `${filtered.length ? selectedIndex + 1 : 0}/${filtered.length}${query || agent !== 'all' ? ` matches · ${sessions.length} total` : ''}${selected?.evidence === 'metadata only' ? ' · metadata only' : ''}  ·  ${scanning ? 'Reading local sources…' : '↑↓ navigate · / search · f source · ? help'}`
@@ -254,6 +287,11 @@ export function App({ onScan, onInspect, onExport, initialAgent, reducedMotion =
     {height > 1 && <Text color={C.muted}>{clip('Resize terminal to at least 48 × 12.', width)}</Text>}
     {height > 2 && <Text color={C.dim}>{clip('q quit · discovery continues in the background', width)}</Text>}
   </Box>;
+
+  if (screen === 'list') return <Library width={width} height={height} sessions={librarySessions} filteredCount={filtered.length}
+    selected={selected} selectedIndex={selectedIndex} rows={grouped} start={visibleStart} agent={agent} query={query} searching={searching}
+    scanning={scanning} busy={busy} result={result} notice={notice} reducedMotion={motionOff} demo={demo} action={rowAction}
+    expanded={detailsExpanded} oldest={oldest} emptyCount={emptyCount} includeEmpty={includeEmpty} />;
 
   return <Box flexDirection="column" width={width} height={height} overflow="hidden">
     <Box width={width} paddingX={1} justifyContent="space-between" height={1}>
@@ -271,37 +309,7 @@ export function App({ onScan, onInspect, onExport, initialAgent, reducedMotion =
       <Reader key={inspected?.id} trace={transcript} width={width} height={Math.max(1, height - 7)} reducedMotion={motionOff} onBack={backToList} active={screen === 'inspect'}
         onExport={() => { if (inspected && !busy) void exportTrace(inspected); }} onMotion={() => setMotionOff(v => !v)} onHelp={() => setScreen('help')} />
     </Box>}
-    {screen === 'list' ? <>
-      <Box paddingX={1} height={1} gap={1}>
-        <Text color={agent === 'all' ? C.accent : C.dim} bold={agent === 'all'}>All {sessions.length}</Text>
-        {AGENTS.filter(source => width >= 105 || (counts.get(source) ?? 0) > 0 || source === agent).map(source => <Text key={source} color={agent === source ? C.accent : C.dim} bold={agent === source}>{AGENT_LABELS[source]} {counts.get(source)}</Text>)}
-      </Box>
-      <Box paddingX={1} height={1}>
-        <Text color={searching ? C.accent : C.muted}>{clip(`${searching ? '›' : '/'} ${query || (searching ? 'Type to filter…' : 'Search titles, projects, IDs')} ${searching ? '▏' : ''}`, width - 2)}</Text>
-      </Box>
-      <Rule width={width} />
-      <Box paddingX={1} height={1}>
-        <Text color={C.dim}>{cell('  TIME', 9)}{cell('SOURCE', 10)}{cell('SESSION', Math.max(8, listWidth - (listWidth >= 98 ? 46 : 26)))}{listWidth >= 98 ? cell('PROJECT', 20) : ''}{cell('MSGS', 7)}</Text>
-      </Box>
-      <Box height={bodyHeight} paddingX={1}>
-        <Box flexDirection="column" width={listWidth} height={bodyHeight} overflow="hidden">
-          {filtered.length ? grouped.slice(visibleStart, visibleStart + bodyHeight).map((row, index) => row.kind === 'date'
-            ? <Text key={`date-${row.label}-${index}`} color={C.accent}>{clipLine(`  ${row.label}`, listWidth)}</Text>
-            : <SessionRow key={row.session.id} session={row.session} selected={row.session.id === selected?.id} width={listWidth} />)
-            : <>
-              <Text> </Text>
-              <Text color={C.text}>{clip(scanning ? '  Looking for local agent traces…' : query || agent !== 'all' ? '  No matching traces.' : '  No traces found in the configured sources.', listWidth)}</Text>
-              {bodyHeight > 3 && <Text color={C.muted}>{clip(query ? '  Escape clears your search. f changes the source.' : '  Press d for source locations and diagnostics.', listWidth)}</Text>}
-              {bodyHeight > 4 && !query && <Text color={C.muted}>{clip('  Add a location with --root <path> or --help.', listWidth)}</Text>}
-            </>}
-          {filtered.length > 0 && <Filler count={bodyHeight - Math.min(bodyHeight, grouped.length - visibleStart)} />}
-        </Box>
-        {sidePreview && <>
-          <Box width={3} flexDirection="column">{Array.from({ length: bodyHeight }, (_, index) => <Text key={index} color={C.line}> │ </Text>)}</Box>
-          <Preview session={selected} width={sideWidth} height={bodyHeight} />
-        </>}
-      </Box>
-    </> : screen === 'palette' ? <Box flexDirection="column" paddingX={2} height={Math.max(1, height - 6)} overflow="hidden">
+    {screen === 'palette' ? <Box flexDirection="column" paddingX={2} height={Math.max(1, height - 6)} overflow="hidden">
       <Text> </Text>
       <Text color={C.accent}>{clip(`› ${commandQuery || 'Find a command…'} ▏`, width - 4)}</Text>
       <Text> </Text>
@@ -315,10 +323,12 @@ export function App({ onScan, onInspect, onExport, initialAgent, reducedMotion =
       {[
         ['↑ ↓ / j k', 'Move between traces or scroll the inspector'],
         ['Enter', 'Open the reading; Enter on a finding opens evidence'],
+        ['← → / Tab', 'Choose an action on the selected row; Enter runs it'],
         ['1 / 2 / 3', 'Reading / timeline / raw source; Tab cycles tabs'],
         ['Ctrl+P', 'Search the command palette'],
         ['/', 'Search titles, projects, IDs, and preview text'],
-        ['f', 'Cycle the harness filter'],
+        ['f / s / v', 'Source filter / sort order / show empty sessions'],
+        ['Space / o', 'Expand row details / open the selected trace'],
         ['e', 'Export the selected trace to a local file'],
         ['r / m', 'Refresh discovery / toggle reduced motion'],
         ['d', 'View checked locations, warnings, and coverage'],
@@ -337,48 +347,12 @@ export function App({ onScan, onInspect, onExport, initialAgent, reducedMotion =
     </>}
     <Rule width={width} />
     <Box paddingX={1} height={1} gap={1}>
-      {screen === 'list' ? <>
-        <Button shortcut="↵" active disabled={!selected || busy}>Inspect</Button>
-        <Button shortcut="e" disabled={!selected || busy}>Export</Button>
-        {width >= 57 && <Button shortcut="r" disabled={scanning}>Refresh</Button>}
-        {width >= 76 && <Button shortcut="d">Sources</Button>}
-        {width >= 93 && <Button shortcut="^p">Commands</Button>}
-      </> : <>
+      <>
         <Button shortcut="Esc" active>Back</Button>
         {screen === 'inspect' && <Button shortcut="e" disabled={busy}>Export</Button>}
         {width >= 70 && <Text color={C.dim}>{screen === 'inspect' ? '1 reading · 2 timeline · 3 source' : '↑↓ navigate'}</Text>}
-      </>}
+      </>
     </Box>
     <Box paddingX={1} height={1}><Text color={notice ? C.warning : C.dim}>{clip(notice || (screen === 'inspect' && transcript ? 'On-device reading · no model request · known secrets scrubbed on export' : screen === 'palette' ? '↑↓ choose · Enter run · Esc dismiss' : footerMessage), width - 2)}</Text></Box>
   </Box>;
-}
-
-function SessionRow({ session, selected, width }: { session: Session; selected: boolean; width: number }) {
-  const showProject = width >= 98;
-  const titleWidth = Math.max(8, width - (showProject ? 46 : 26));
-  return <Text backgroundColor={selected ? C.selected : undefined} color={C.text} wrap="truncate-end">
-    <Text color={selected ? C.accent : C.dim}>{cell(`${selected ? '›' : ' '} ${timeLabel(session)}`, 9)}</Text>
-    <Text color={AGENT_COLORS[session.agent]}>{cell(AGENT_LABELS[session.agent], 10)}</Text>
-    <Text bold={selected} color={selected ? C.text : '#ADB9C3'}>{cell(`${session.parentId ? '↳ ' : ''}${session.title || 'Untitled trace'}`, titleWidth - 1)} </Text>
-    {showProject && <Text color={C.muted}>{cell(session.project ?? '—', 19)} </Text>}
-    <Text color={session.messages === null ? C.dim : C.muted}>{cell(session.messages === null ? '—' : String(session.messages), 7)}</Text>
-  </Text>;
-}
-
-function Preview({ session, width, height }: { session?: Session; width: number; height: number }) {
-  if (!session) return <Box width={width}><Text color={C.dim}>Select a trace to preview</Text></Box>;
-  const lines: DisplayLine[] = [
-    { text: AGENT_LABELS[session.agent].toUpperCase(), color: AGENT_COLORS[session.agent], bold: true },
-    ...wrap(session.title || 'Untitled trace', width, 3).map(text => ({ text, color: C.text, bold: true })),
-    { text: '' },
-    { text: clip(session.cwd ?? session.project ?? 'Project unavailable', width), color: C.muted },
-    { text: `${session.messages ?? '—'} messages · ${session.toolCalls ?? '—'} tools · ${session.bytes ? bytesLabel(session.bytes) : 'size unknown'}`, color: C.dim },
-    { text: session.evidence, color: session.evidence === 'metadata only' ? C.warning : C.accent },
-    ...(session.timeSource === 'filesystem' ? [{ text: 'Time inferred from file modification', color: C.warning }] : []),
-    ...(session.archived ? [{ text: 'Archived session', color: C.dim }] : []),
-    { text: '' },
-    ...wrap(session.preview || 'No text preview available. Enter opens the trace.', width, Math.max(1, height - 10)).map(text => ({ text, color: C.muted })),
-    ...(session.warnings.length ? [{ text: clip(`! ${session.warnings[0]}`, width), color: C.warning }] : []),
-  ];
-  return <Box width={width} height={height} flexDirection="column" overflow="hidden">{lines.slice(0, height).map((line, index) => <Text key={index} color={line.color} bold={line.bold}>{clip(line.text, width) || ' '}</Text>)}</Box>;
 }

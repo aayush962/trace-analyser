@@ -3,7 +3,7 @@ import type { Session, TraceEvent, Transcript, ScanResult } from './core/types.j
 /** Hand-authored synthetic sessions. No local trace or account is read. */
 export function demoTraces(): Transcript[] {
   const specs = [
-    ['Checkout retries after an expired token', 'claude-code', 'storefront'],
+    ['Checkout retries after an expired token — investigate the failure and verify recovery', 'claude-code', 'storefront'],
     ['Make the command palette keyboard accessible', 'codex', 'workbench'],
     ['Investigate a slow search query', 'cursor', 'atlas'],
     ['Prepare release notes from the changelog', 'hermes', 'hermes'],
@@ -65,6 +65,22 @@ export function demoTraces(): Transcript[] {
       evidence: 'messages + tools', locator: { path: `/synthetic-demo/${n}.jsonl`, root: '/synthetic-demo', format: 'synthetic' } };
     return { session, events, truncated: false, warnings: session.warnings };
   });
+}
+
+/** A fuller library for trying table navigation; every entry is still synthetic. */
+export function demoLibraryTraces(): Transcript[] {
+  const titles = [
+    ['Review token refresh and retry behavior', 'Add regression coverage for expired checkout sessions'],
+    ['Restore keyboard focus when the command palette closes', 'Verify Escape and arrow-key navigation in the command palette'],
+    ['Move candidate filtering ahead of search ranking', 'Check search behavior on a large project'],
+    ['Review breaking changes and migration steps', 'Check release-note links before publishing'],
+  ];
+  return demoTraces().flatMap((trace, n) => [trace, ...titles[n].map((title, i) => {
+    const offset = (i + 1) * 37 * 60_000;
+    const events = trace.events.map(e => ({ ...e, timestamp: e.timestamp ? new Date(Date.parse(e.timestamp) - offset).toISOString() : null }));
+    return { ...trace, events, session: { ...trace.session, id: `${trace.session.id}-sample-${i}`, nativeId: `${trace.session.nativeId}-sample-${i}`, title,
+      startedAt: events[0].timestamp, updatedAt: events.at(-1)!.timestamp } };
+  })]);
 }
 
 export async function scanDemo(traces: Transcript[], emit: (s: Session) => void, signal: AbortSignal): Promise<ScanResult> {

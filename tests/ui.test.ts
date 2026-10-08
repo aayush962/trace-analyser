@@ -51,6 +51,112 @@ test('terminal formatting strips executable controls and preserves graphemes wit
   assert.equal(windowCells('\x1b]52;c;payload\x07abc', 1, 4), 'bc  ');
 });
 
+test('inline actions stay aligned, run against the selected row, and reset when moving', async () => {
+  const sessions = [session('newest', '2026-10-07T12:00:00Z'), session('older')];
+  const exports: string[] = [], inspections: string[] = [];
+  const ui = harness(120, { reducedMotion: true,
+    onScan: async () => result(sessions),
+    onInspect: async selected => { inspections.push(selected.id); return { session: selected, events: [], warnings: [], truncated: false }; },
+    onExport: async selected => { exports.push(selected.id); return '/tmp/selected.trace.json'; },
+  }, 32);
+  const selectedRow = () => ui.frame().split('\n').find(line => line.startsWith('  › ')) ?? '';
+  try {
+    await eventually(() => ui.frame().includes('2 traces'));
+    const rows = ui.frame().split('\n').filter(line => /Trace (newest|older)/.test(line) && line.includes('Export'));
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].indexOf('Export'), rows[1].indexOf('Export'));
+    assert.ok(rows.every(row => /Inspect\s+Export\s+Details\s*$/.test(row)));
+    ui.stdin.write('\x1b[C\x1b[C');
+    await eventually(() => selectedRow().includes('›Details'));
+    ui.stdin.write('\x1b[D');
+    await eventually(() => selectedRow().includes('›Export'));
+    ui.stdin.write('\r');
+    await eventually(() => ui.frame().includes('Saved'));
+    assert.deepEqual(exports, ['newest']);
+    assert.deepEqual(inspections, []);
+    ui.stdin.write('\t');
+    await eventually(() => selectedRow().includes('›Details'));
+    ui.stdin.write('\r');
+    await eventually(() => ui.frame().includes('Source /tmp/newest.jsonl'));
+    assert.ok(ui.frame().includes('LOCAL TRACES'));
+    ui.stdin.write('\x1b[Z');
+    await eventually(() => selectedRow().includes('›Export'));
+    ui.stdin.write('\x1b[B');
+    await eventually(() => selectedRow().includes('Trace older') && selectedRow().includes('›Inspect'));
+    ui.stdin.write('s');
+    await eventually(() => ui.frame().includes('Oldest ↑'));
+    assert.ok(ui.frame().indexOf('Trace older') < ui.frame().indexOf('Trace newest'));
+    assert.ok(selectedRow().includes('Trace older'), 'sorting preserves selection by identity');
+    ui.stdin.write('/'); await delay(30);
+    ui.stdin.write('newest');
+    await eventually(() => ui.frame().includes('1/1 matches'));
+    assert.deepEqual(exports, ['newest'], 'search text must not trigger shortcuts');
+    ui.stdin.write('\r'); await delay(30);
+    ui.stdin.write('o');
+    await eventually(() => inspections.length === 1);
+    assert.deepEqual(inspections, ['newest']);
+  } finally { ui.app.unmount(); await ui.app.waitUntilExit(); }
+});
+
+test('library resizes, pages a large result set, and keeps all row actions usable', async () => {
+  const sessions = Array.from({ length: 600 }, (_, index) => session(`session-${String(index).padStart(3, '0')}`));
+  const ui = harness(160, { reducedMotion: true,
+    onScan: async () => result(sessions),
+    onInspect: async selected => ({ session: selected, events: [], warnings: [], truncated: false }),
+    onExport: async () => '/tmp/export.json',
+  }, 36);
+  const fits = () => {
+    assert.ok(ui.frame().split('\n').length <= ui.stdout.rows + 1, ui.frame());
+    assert.ok(ui.frame().split('\n').every(line => stringWidth(line) <= ui.stdout.columns), ui.frame());
+  };
+  try {
+    await eventually(() => ui.frame().includes('600 traces'));
+    ui.stdin.write('\x1b[B\x1b[B\x1b[B');
+    await eventually(() => ui.frame().includes('4/600'));
+    ui.stdin.write('g');
+    await eventually(() => ui.frame().includes('1/600'));
+    for (const [columns, rows] of [[48, 12], [60, 20], [80, 24], [100, 28], [120, 32], [160, 36]]) {
+      ui.stdout.columns = columns; ui.stdout.rows = rows; ui.stdout.emit('resize');
+      await delay(60); fits();
+      assert.ok(ui.frame().includes('Inspect') && ui.frame().includes('Export'));
+      assert.ok(ui.frame().includes(columns < 101 ? 'Info' : 'Details'), ui.frame());
+      ui.stdin.write(' '); await delay(40); fits();
+      assert.ok(ui.frame().includes('/tmp/session-000.jsonl'), ui.frame());
+      ui.stdin.write(' '); await delay(30);
+    }
+    ui.stdin.write('G');
+    await eventually(() => ui.frame().includes('600/600'));
+    assert.ok(ui.frame().includes('Trace session-599') && ui.frame().includes('┃'));
+    assert.ok(!ui.frame().includes('Trace session-000'), 'off-screen rows are not rendered');
+    ui.stdin.write('\x1b[5~'); await delay(40);
+    assert.ok(!ui.frame().includes('600/600'));
+    ui.stdin.write('g');
+    await eventually(() => ui.frame().includes('1/600') && ui.frame().includes('Trace session-000'));
+  } finally { ui.app.unmount(); await ui.app.waitUntilExit(); }
+});
+
+test('selected-title marquee pauses, pans within fixed cells, returns, and rests; reduced motion stays still', async () => {
+  const frames: string[] = [];
+  const stdout = Object.assign(new Writable({ write(chunk, _encoding, callback) { frames.push(safeText(chunk.toString()).trimEnd()); callback(); } }), { columns: 80, rows: 10, isTTY: true });
+  const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode() { return this; }, ref() {}, unref() {} });
+  const view = (reduced: boolean) => createElement(Text, {}, '[', createElement(Marquee, { text: 'abcdefghijkl', width: 8, active: true, reduced }), '] Export');
+  const app = render(view(false), { stdin, stdout, stderr: stdout, debug: true, interactive: true, patchConsole: false, kittyKeyboard: { mode: 'disabled' } });
+  try {
+    await delay(150);
+    const first = frames.at(-1)!;
+    assert.equal(first, '[abcdefg…] Export');
+    await delay(400); assert.equal(frames.at(-1), first, 'title initially pauses');
+    await delay(850); assert.notEqual(frames.at(-1), first, 'overflow becomes readable');
+    assert.ok(frames.every(frame => stringWidth(frame) === stringWidth(first)), 'action column never moves');
+    await delay(2200); assert.equal(frames.at(-1), first, 'returns to the beginning');
+    const count = frames.length;
+    await delay(250); assert.equal(frames.length, count, 'idle title has no perpetual animation');
+    app.rerender(view(true)); await delay(100);
+    const quiet = frames.length;
+    await delay(1250); assert.equal(frames.length, quiet, 'reduced motion never starts a timer');
+  } finally { app.unmount(); await app.waitUntilExit(); }
+});
+
 for (const columns of [80, 120, 160]) {
   test(`reading, evidence, palette and resize work at ${columns} columns`, async () => {
     const traces = demoTraces();
@@ -176,24 +282,56 @@ test('streamed discovery preserves selected trace identity when newer results ar
   } finally { ui.app.unmount(); await ui.app.waitUntilExit(); }
 });
 
-test('selected-title marquee pauses, pans within fixed cells, returns, and rests; reduced motion stays still', async () => {
-  const frames: string[] = [];
-  const stdout = Object.assign(new Writable({ write(chunk, _encoding, callback) { frames.push(safeText(chunk.toString()).trimEnd()); callback(); } }), { columns: 80, rows: 10, isTTY: true });
-  const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode() { return this; }, ref() {}, unref() {} });
-  const view = (reduced: boolean) => createElement(Text, {}, '[', createElement(Marquee, { text: 'abcdefghijkl', width: 8, active: true, reduced }), '] Export');
-  const app = render(view(false), { stdin, stdout, stderr: stdout, debug: true, interactive: true, patchConsole: false, kittyKeyboard: { mode: 'disabled' } });
+test('refresh keeps the chosen trace when its row arrives after other streamed results', async () => {
+  const older = session('older'), newer = session('newer', '2026-10-06T12:00:00Z');
+  let scans = 0, inspected = '';
+  let finish: (() => void) | undefined;
+  const ui = harness(100, { reducedMotion: true,
+    onScan: async emit => {
+      if (scans++ === 0) return result([older, newer]);
+      emit(newer);
+      return new Promise(resolve => { finish = () => { emit(older); resolve(result([newer, older])); }; });
+    },
+    onInspect: async selected => { inspected = selected.id; return { session: selected, events: [], warnings: [], truncated: false }; },
+    onExport: async () => '/tmp/export.json',
+  });
   try {
-    await delay(150);
-    const first = frames.at(-1)!;
-    assert.equal(first, '[abcdefg…] Export');
-    await delay(400); assert.equal(frames.at(-1), first, 'title initially pauses');
-    await delay(850); assert.notEqual(frames.at(-1), first, 'overflow becomes readable');
-    assert.ok(frames.every(frame => stringWidth(frame) === stringWidth(first)), 'action column never moves');
-    await delay(2200); assert.equal(frames.at(-1), first, 'returns to the beginning');
-    const count = frames.length;
-    await delay(250); assert.equal(frames.length, count, 'idle title has no perpetual animation');
-    app.rerender(view(true)); await delay(100);
-    const quiet = frames.length;
-    await delay(1250); assert.equal(frames.length, quiet, 'reduced motion never starts a timer');
-  } finally { app.unmount(); await app.waitUntilExit(); }
+    await eventually(() => ui.frame().includes('2 traces'));
+    ui.stdin.write('j');
+    await eventually(() => ui.frame().split('\n').some(line => line.startsWith('  › ') && line.includes('Trace older')));
+    ui.stdin.write('r');
+    await eventually(() => ui.frame().includes('1 found') && !ui.frame().includes('Trace older'));
+    finish!();
+    await eventually(() => ui.frame().includes('2 traces'));
+    ui.stdin.write('\r');
+    await eventually(() => inspected.length > 0);
+    assert.equal(inspected, 'older');
+  } finally { ui.app.unmount(); await ui.app.waitUntilExit(); }
+});
+
+test('empty sessions are hidden by default and can be revealed without rescanning; unknown captures stay visible', async () => {
+  const empty = { ...session('empty'), activity: 'empty' as const, messages: 0, toolCalls: 0 };
+  const unknown = { ...session('unknown'), activity: 'unknown' as const, messages: null, toolCalls: null };
+  const sessions = [empty, unknown, session('active')];
+  let scans = 0;
+  const props: AppProps = { reducedMotion: true,
+    onScan: async emit => { scans++; sessions.forEach(emit); return result(sessions); },
+    onInspect: async selected => ({ session: selected, events: [], warnings: [], truncated: false }),
+    onExport: async () => '/tmp/export.json',
+  };
+  const ui = harness(120, props);
+  try {
+    await eventually(() => ui.frame().includes('2 traces') && ui.frame().includes('1 empty hidden · v show'));
+    assert.ok(ui.frame().includes('Trace unknown'));
+    assert.ok(!ui.frame().includes('Trace empty'));
+    ui.stdin.write('v');
+    await eventually(() => ui.frame().includes('[empty] Trace empty') && ui.frame().includes('3 traces'));
+    assert.ok(ui.frame().includes('1 empty shown · v hide'));
+    ui.stdin.write('v');
+    await eventually(() => !ui.frame().includes('Trace empty') && ui.frame().includes('2 traces'));
+    assert.equal(scans, 1);
+  } finally { ui.app.unmount(); await ui.app.waitUntilExit(); }
+  const included = harness(120, { ...props, initialIncludeEmpty: true });
+  try { await eventually(() => included.frame().includes('[empty] Trace empty')); }
+  finally { included.app.unmount(); await included.app.waitUntilExit(); }
 });

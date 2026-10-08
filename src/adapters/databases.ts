@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { traceActivity } from '../core/activity.js';
 import { lstat, open, readdir } from 'node:fs/promises';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Adapter, Root, ScanContext, Session, TraceEvent, Transcript } from '../core/types.js';
@@ -34,7 +35,7 @@ function closeDatabase(db: DatabaseSync | undefined): void {
 
 function inspectedSession(session: Session, events: TraceEvent[], truncated: boolean, bytes: number): Session {
   return {
-    ...session, bytes,
+    ...session, bytes, activity: traceActivity(events, truncated || session.locator.format === 'cursor-sqlite' && session.activity !== 'empty' && !events.length),
     messages: truncated ? null : new Set(events.filter(e => e.kind === 'message').map(e => e.source.row ?? e.source.line ?? e.id)).size,
     toolCalls: truncated || session.locator.format === 'cursor-text' ? null : events.filter(e => e.kind === 'tool-call').length,
     warnings: session.warnings.filter(w => !w.startsWith('Message count is producer-reported')),
@@ -56,7 +57,7 @@ function baseSession(root: Root, nativeId: string, file: string, format: string)
     title: `Untitled ${root.agent} session`, project: null, cwd: null,
     startedAt: null, updatedAt: null, timeSource: 'unknown', messages: null,
     toolCalls: null, bytes: 0, archived: false, parentId: null, preview: '',
-    warnings: [], evidence: 'metadata only', locator: { path: file, root: root.path, format },
+    warnings: [], evidence: 'metadata only', activity: 'unknown', locator: { path: file, root: root.path, format },
   };
 }
 
@@ -165,6 +166,7 @@ async function* discoverCursorFiles(root: Root, ctx: ScanContext): AsyncGenerato
       session.toolCalls = data.truncated || session.locator.format === 'cursor-text' ? null : data.events.filter(e => e.kind === 'tool-call').length;
       session.bytes = data.bytes;
       session.warnings = data.warnings;
+      session.activity = traceActivity(data.events, data.truncated || data.warnings.some(w => /Invalid|incomplete/.test(w)));
       if (data.truncated && !session.warnings.some(w => w.includes('Bounded'))) session.warnings.push('Bounded preview; message and tool counts are unknown.');
       session.evidence = data.events.some(e => e.kind === 'tool-call') ? 'messages + tools' : 'messages';
       yield session;
@@ -182,6 +184,8 @@ async function* discoverCursorDatabase(root: Root, file: string, ctx: ScanContex
     db = await openDatabase(file);
     const tables = cursorTables(db);
     if (!tables.length) { diagnostic(ctx, 'cursor', file, 'Unsupported Cursor SQLite schema: no ordinary key/value table'); return; }
+    // Probe keys only, including alternate supported tables; never hydrate all bubbles.
+    const bubbleProbes = tables.map(table => db!.prepare(`SELECT 1 FROM "${table}" WHERE key >= ? AND key < ? LIMIT 1`));
     let remaining = Math.min(MAX_DATABASE_ROWS, Math.max(0, ctx.maxFiles - ctx.scanned));
     for (const table of tables) {
       // Bound values before transferring them out of SQLite; large opaque blobs are never hydrated.
@@ -205,6 +209,18 @@ async function* discoverCursorDatabase(root: Root, file: string, ctx: ScanContex
           session.timeSource = session.updatedAt ? 'recorded' : 'unknown';
           session.cwd = nullableText(data.cwd ?? data.workspacePath);
           session.project = projectName(session.cwd);
+          const slots = [data.fullConversationHeadersOnly, data.conversation];
+          const declared = slots.some(Array.isArray);
+          const emptySlots = slots.every(slot => slot === undefined || Array.isArray(slot) && slot.length === 0);
+          const map = data.conversationMap;
+          const emptyMap = map === undefined || map && typeof map === 'object' && !Array.isArray(map) && Object.keys(map).length === 0;
+          if (declared && emptySlots && emptyMap && live(ctx)) {
+            const prefix = `bubbleId:${nativeId}:`;
+            if (!bubbleProbes.some(probe => probe.get(prefix, `${prefix}\uffff`))) {
+              session.activity = 'empty';
+              session.messages = 0; session.toolCalls = 0;
+            }
+          }
         }
         session.warnings.push('Experimental Cursor database format; full tools and attachments may be unavailable.');
         yield session;
@@ -320,6 +336,7 @@ async function* discoverHermesDatabase(root: Root, file: string, ctx: ScanContex
     const optional = ['title', 'ended_at', 'message_count', 'tool_call_count', 'cwd', 'parent_session_id', 'archived'];
     const fields = ['id', 'started_at', ...optional.filter(c => schema.sessions.has(c)).map(c => ['title', 'cwd'].includes(c) ? `substr("${c}", 1, 2048) AS "${c}"` : `"${c}"`)];
     const preview = db.prepare("SELECT substr(content, 1, 240) AS content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id LIMIT 1");
+    const anyMessage = db.prepare('SELECT 1 FROM messages WHERE session_id = ? LIMIT 1');
     const last = schema.messages.has('timestamp') ? db.prepare('SELECT timestamp FROM messages WHERE session_id = ? ORDER BY timestamp DESC LIMIT 1') : null;
     const limit = Math.min(MAX_DATABASE_ROWS, Math.max(0, ctx.maxFiles - ctx.scanned));
     let seen = 0;
@@ -339,6 +356,7 @@ async function* discoverHermesDatabase(root: Root, file: string, ctx: ScanContex
       session.parentId = nullableText(row.parent_session_id);
       session.archived = row.archived === 1;
       session.messages = count(row.message_count); session.toolCalls = count(row.tool_call_count);
+      if (!anyMessage.get(nativeId) && !session.messages && !session.toolCalls) session.activity = 'empty';
       session.evidence = first ? (session.toolCalls ? 'messages + tools' : 'messages') : 'metadata only';
       session.warnings = ['Message count is producer-reported and may include system/tool rows.'];
       yield session;

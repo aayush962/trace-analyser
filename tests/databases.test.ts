@@ -6,6 +6,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { cursorAdapter, hermesAdapter } from '../src/adapters/databases.js';
+import { discover } from '../src/core/discovery.js';
 import type { Adapter, Root, ScanContext, Session } from '../src/core/types.js';
 
 function context(home: string, overrides: Partial<ScanContext> = {}): ScanContext {
@@ -201,4 +202,52 @@ test('Cursor missing bubble records explicitly make an inspection incomplete', a
   assert.equal(opened.truncated, true);
   assert.equal(opened.session.messages, null);
   assert.ok(opened.warnings.some(w => w.includes('Missing database row')));
+});
+
+test('Cursor hides only verified empty shells, preserving bubbles, tools, unknown formats and missing data', async t => {
+  const home = await temporary(t), file = path.join(home, 'state.vscdb');
+  const db = new DatabaseSync(file);
+  db.exec('CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT); CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT);');
+  const put = db.prepare('INSERT INTO cursorDiskKV VALUES (?, ?)');
+  const composer = (id: string, value: unknown) => put.run(`composerData:${id}`, JSON.stringify(value));
+  composer('empty', { fullConversationHeadersOnly: [], conversationMap: {} });
+  composer('named-empty', { name: 'An unsent draft', text: 'Draft text', conversation: [] });
+  composer('with-header', { fullConversationHeadersOnly: [{ bubbleId: 'gone', type: 1 }] });
+  composer('with-orphan-bubble', { fullConversationHeadersOnly: [] });
+  put.run('bubbleId:with-orphan-bubble:one', JSON.stringify({ type: 1, text: 'A real request' }));
+  composer('alternate-table', { fullConversationHeadersOnly: [] });
+  db.prepare('INSERT INTO ItemTable VALUES (?, ?)').run('bubbleId:alternate-table:one', JSON.stringify({ type: 2, text: 'A real answer' }));
+  composer('tool-only', { conversation: [{ role: 'assistant', content: [{ type: 'tool_use', name: 'read_file', input: {} }] }] });
+  composer('unknown-map', { fullConversationHeadersOnly: [], conversationMap: { opaque: { data: true } } });
+  composer('unknown-format', { futureConversation: { payload: true } });
+  composer('malformed-headers', { fullConversationHeadersOnly: 'unsupported' });
+  put.run('composerData:broken', '{');
+  db.close();
+  const before = await digest(file);
+  const emitted: Session[] = [];
+  const scan = await discover({ roots: [file], agent: 'cursor', cache: false }, s => emitted.push(s));
+  assert.equal(scan.scan.emptyHidden, 2);
+  assert.equal(scan.sessions.length, 8);
+  assert.ok(scan.sessions.every(s => s.activity !== 'empty'));
+  assert.deepEqual(emitted.map(s => s.id).sort(), scan.sessions.map(s => s.id).sort());
+  const all = await discover({ roots: [file], agent: 'cursor', cache: false, includeEmpty: true });
+  assert.equal(all.sessions.length, 10);
+  assert.equal(all.scan.emptyHidden, 0);
+  assert.deepEqual(all.sessions.filter(s => s.activity === 'empty').map(s => s.nativeId).sort(), ['empty', 'named-empty']);
+  assert.ok(all.sessions.filter(s => s.activity === 'empty').every(s => s.messages === 0 && s.toolCalls === 0));
+  const bounded = await collect(cursorAdapter, { agent: 'cursor', path: file, provenance: 'explicit' }, context(home, { maxRecordBytes: 1 }));
+  assert.ok(bounded.every(s => s.activity === 'unknown'), 'oversized and invalid metadata are never classified as empty');
+  assert.equal(await digest(file), before);
+});
+
+test('Hermes checks message existence instead of trusting a zero producer count', async t => {
+  const home = await temporary(t), file = path.join(home, 'state.db');
+  const db = createHermes(file);
+  const put = db.prepare('INSERT INTO sessions VALUES (?, 1700000000, NULL, NULL, NULL, ?, 0, NULL, 0)');
+  put.run('empty', 0); put.run('stale-zero', 0); put.run('missing-records', 4);
+  db.prepare('INSERT INTO messages VALUES (1, ?, ?, ?, 1700000000, NULL, NULL, NULL, NULL)').run('stale-zero', 'assistant', 'A real response');
+  db.close();
+  const scan = await discover({ roots: [file], agent: 'hermes', cache: false });
+  assert.equal(scan.scan.emptyHidden, 1);
+  assert.deepEqual(scan.sessions.map(s => s.nativeId).sort(), ['missing-records', 'stale-zero']);
 });

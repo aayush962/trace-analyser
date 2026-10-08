@@ -14,7 +14,7 @@ npm run build
 npm start
 ```
 
-Try the complete reading flow with synthetic data, without scanning your machine:
+Try the library and reading flow with twelve synthetic traces across four sources, without scanning your machine:
 
 ```sh
 npm run demo
@@ -22,7 +22,7 @@ npm run demo
 node dist/cli.js demo --no-motion
 ```
 
-![Reading view, captured from Ink with synthetic demo data](docs/images/terminal-reading.png)
+![Session library, captured from Ink with synthetic demo data](docs/images/terminal-library.png)
 
 For a global command from this checkout:
 
@@ -37,16 +37,22 @@ The package is **not published**. `npx trace-reader` is the intended release exp
 
 ## Browse
 
-The TUI opens in an alternate screen and restores the terminal when it exits. A warm accent marks controls, teal marks user content, and coral marks explicitly reported errors. Wide terminals get a preview rail and a split reading view; narrow terminals stack the content. It is keyboard-first; mouse clicking is not implemented.
+The TUI opens in an alternate screen and restores the terminal when it exits. The library uses a full-width, date-grouped table with **Inspect, Export, and Details on every row**. Left/right or Tab selects an action; Enter runs it. Moving to another row resets the action to Inspect. A warm accent marks focus, and the bottom preview follows the selection. Space expands source details. Roomy terminals show discovery totals; smaller windows progressively hide metadata columns while preserving all three actions. It is keyboard-first; mouse clicking is not implemented.
 
 | Key | Action |
 | --- | --- |
 | `↑` / `↓`, `j` / `k` | Move between sessions |
 | `/` | Search titles, project names, IDs, and preview metadata |
 | `f` | Cycle source filters |
-| `Enter` | Open the reading; on an observation, inspect its evidence |
+| `s` | Toggle newest/oldest order, keeping the current trace selected |
+| `v` | Show/hide confirmed empty sessions |
+| `←` / `→`, `h` / `l`, `Tab` / `Shift+Tab` | Choose a row action |
+| `Enter` | Run the selected action; in the reading, open an observation's evidence |
+| `o` | Open the selected trace directly |
+| `Space` | Expand/collapse the selected row's details |
+| `PgUp` / `PgDn`, `g` / `G` | Page through the library, or jump to first/last trace |
 | `Ctrl+P` | Searchable command palette |
-| `1` / `2` / `3`, `Tab` | Reading / event timeline / source data |
+| `1` / `2` / `3`, `Tab` | Inside a trace: reading / event timeline / source data |
 | `e` | Export the current session to a `.trace.json` file in the working directory |
 | `r` | Refresh discovery |
 | `d` | Source diagnostics |
@@ -57,7 +63,7 @@ The TUI opens in an alternate screen and restores the terminal when it exits. A 
 
 In the reading, arrows choose observations and Enter opens evidence. `o` opens the first user message and `l` the last assistant message. In the timeline, arrows move by event, `/` searches content, `c` includes context, and `[` / `]` moves between an observation's evidence events. Space/Page Down scrolls a long output; `g`/`G` jumps to the first/last event. `p` plays or pauses event replay at 1.1 seconds per event (not original wall-clock timing). Escape returns to the reading, then the library.
 
-Activity indicators run only during work. Event transitions are brief and never delay text. Idle screens have no animation timer. `--no-motion` or `TRACE_READER_REDUCED_MOTION=1` disables animations and replay; CI and dumb terminals also default to reduced motion. The palette can change the setting during a session.
+A long selected title pauses, gently pans to reveal the overflow, returns, and rests. The marquee occupies only the title cells, so actions never shift. It pauses while searching or choosing another action. Activity indicators run only during work; event transitions never delay text. After the title settles, idle screens have no animation timer. `--no-motion` or `TRACE_READER_REDUCED_MOTION=1` disables animations and replay; CI and dumb terminals also default to reduced motion. The palette can change the setting during a session.
 
 The reading currently uses **local deterministic rules, not an AI model**. It identifies structured reported errors, three or more identical tool calls, calls without a matched result, and uncertain result linkage. Every observation links to retained events. Repetition does not prove wasted work; absence of observations does not prove success. Counts describe retained message events, not necessarily distinct native messages. Time is the span between retained timestamps, not measured agent execution time. Unknown discovery counts are shown as `—`.
 
@@ -85,7 +91,11 @@ trace-reader cache clear
 
 Without a TTY, the default command becomes a finite plain list. `--json` produces one versioned object with scan completeness and diagnostics; warnings do not corrupt stdout. `--plain` forces the line-oriented view. `NO_COLOR=1` and `--no-color` disable styling.
 
-Default discovery hides archived and explicit child sessions. Use `--include-archived` and `--include-children` to show them. For sessions found through custom roots, pass the same `--root` to subsequent `inspect`/`export` commands so they can be located again. IDs remain stable for the same physical source file or database row.
+Default discovery hides confirmed empty, archived, and explicit child sessions. Use `--include-empty`, `--include-archived`, and `--include-children` to show them. The terminal footer reports empty sessions hidden; `v` or the command palette reveals them without another scan. Explicit inspection/export by ID can still access hidden sessions. No source files are deleted.
+
+Empty means the adapter can establish that no conversation or tool activity was captured. Cursor database shells must declare empty conversation slots and have no associated message bubbles in either supported table or entries in their conversation map. A title or unsent draft does not make a shell a trace. Truncated, malformed, unfamiliar, or unreadable captures remain visible, as do tool-only captures and sessions referencing missing messages. This is deliberately conservative: a zero message count alone is insufficient. JSON discovery includes `scan.emptyHidden` and an optional session `activity` classification; older metadata without a classification is treated as unknown.
+
+For sessions found through custom roots, pass the same `--root` to subsequent `inspect`/`export` commands so they can be located again. IDs remain stable for the same physical source file or database row.
 
 Exit codes: `0` success (including an empty completed scan), `1` operational failure, `2` invalid application arguments, `3` unsupported/invalid import, `4` partial scan or bounded import/export, `130` interrupted. Inspect the diagnostics as well as the exit code. Commander may use exit code `1` for its own option syntax errors.
 
@@ -128,6 +138,6 @@ node dist/cli.js --help
 
 `src/adapters` owns vendor-specific formats. `src/core` owns bounded I/O, discovery, portable packages, and scrubbing. `src/ui` is a React/Ink view over those APIs. `src/cli.tsx` supplies both interactive and scriptable commands. This starts as one package; split browser-safe importers into workspace packages when the web surface exists.
 
-Tests use synthetic fixtures created in temporary directories; no personal traces are checked in. They cover JSONL boundaries, role/tool semantics, IDs, profiles, live SQLite WAL data and unchanged source bytes, terminal safety, keyboard interactions at 80/120/160 columns, option propagation, overwrite protection, and export round-trips.
+Tests use synthetic fixtures created in temporary directories; no personal traces are checked in. They cover JSONL boundaries, role/tool semantics, IDs, profiles, live SQLite WAL data and unchanged source bytes, terminal safety, library interactions and resizing from 48×12 to 160×36, marquee/reduced motion, option propagation, overwrite protection, and export round-trips.
 
 See [terminal library research](docs/tui-research.md) and [phase-one implementation notes](docs/phase-one.md). The two original planning documents remain as reference material, with their broader scope deferred.

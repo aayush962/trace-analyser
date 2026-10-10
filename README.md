@@ -125,7 +125,7 @@ There is no universal trace format. Known-store discovery does not crawl the who
 
 The first portable JSON schema is provisional. It is suitable for local round-trips; a browser importer and backend still need their own validation and compatibility gates. A snapshot digest is an identity aid, not a signature or authorization mechanism.
 
-The reading uses an internal `trace-reader/2-draft.1` projection with native tool-call IDs, source record references and explicit unknown states. The initial mappings cover Claude/Codex messages and tool events; other adapters get a conservative projection of what they expose. Unknown context/usage records are retained, not interpreted. Source-local IDs and extracted fragments are labeled. This is not a complete native normalization or a v2 export migration: `export` still produces sanitized v1 packages. See [the schema proposal](docs/normalized-schema.md) and [terminal design notes](docs/terminal-design.md).
+The reading uses an internal `trace-reader/2-draft.1` projection with native tool-call IDs, source record references and explicit unknown states. The initial mappings cover Claude/Codex messages and tool events; other adapters get a conservative projection of what they expose. Unknown context/usage records are retained, not interpreted. Source-local IDs and extracted fragments are labeled. This is not a complete native normalization or a v2 export migration: `export` still produces sanitized v1 packages.
 
 ## Development
 
@@ -139,5 +139,3 @@ node dist/cli.js --help
 `src/adapters` owns vendor-specific formats. `src/core` owns bounded I/O, discovery, portable packages, and scrubbing. `src/ui` is a React/Ink view over those APIs. `src/cli.tsx` supplies both interactive and scriptable commands. This starts as one package; split browser-safe importers into workspace packages when the web surface exists.
 
 Tests use synthetic fixtures created in temporary directories; no personal traces are checked in. They cover JSONL boundaries, role/tool semantics, IDs, profiles, live SQLite WAL data and unchanged source bytes, terminal safety, library interactions and resizing from 48×12 to 160×36, marquee/reduced motion, option propagation, overwrite protection, and export round-trips.
-
-See [terminal library research](docs/tui-research.md) and [phase-one implementation notes](docs/phase-one.md). The two original planning documents remain as reference material, with their broader scope deferred.

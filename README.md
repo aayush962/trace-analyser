@@ -1,4 +1,4 @@
-# Trace reader
+# trace-analyser
 
 A local terminal reader for saved coding-agent sessions. Find a conversation, read its recorded observations, and jump from each finding to the supporting events.
 
@@ -9,31 +9,41 @@ A local terminal reader for saved coding-agent sessions. Find a conversation, re
 Requires **Node 22.13 or newer**. Node 24 LTS is a good default. Node 22 may print an experimental warning for its built-in SQLite reader; there are no native addon builds or Python requirements.
 
 ```sh
+npx trace-analyser@latest
+```
+
+For repeat use, install it once:
+
+```sh
+npm install -g trace-analyser
+trace-analyser
+```
+
+`trace-reader`, the project's earlier name, still works as an alias of the command.
+
+Try the library and reading flow with twelve synthetic traces across four sources, without scanning your machine:
+
+```sh
+npx trace-analyser@latest demo
+```
+
+![Session library, captured from Ink with synthetic demo data](docs/images/terminal-library.png)
+
+### From source
+
+```sh
+git clone https://github.com/aayush962/trace-analyser.git
+cd trace-analyser
 npm ci
 npm run build
 npm start
 ```
 
-Try the library and reading flow with twelve synthetic traces across four sources, without scanning your machine:
+`npm run demo` runs the demo from source, `npm run dev` runs the TypeScript directly, and `npm install -g .` installs the command from this checkout.
 
-```sh
-npm run demo
-# Or after building:
-node dist/cli.js demo --no-motion
-```
+### Releases
 
-![Session library, captured from Ink with synthetic demo data](docs/images/terminal-library.png)
-
-For a global command from this checkout:
-
-```sh
-npm install -g .
-trace-reader
-```
-
-For development, use `npm run dev`. To make an installable archive, use `npm pack`, then `npm install -g ./trace-reader-0.1.0.tgz`.
-
-The package is **not published**. `npx trace-reader` is the intended release experience, not an available installation command today. The registry returned no package for this name on October 6, 2026; that does not reserve it. A scoped package is the fallback.
+Versions are published to npm from GitHub Actions with provenance when a `v*` tag is pushed; see `.github/workflows/release.yml`. Cut one with `npm version <patch|minor|major>`, then `git push --follow-tags`.
 
 ## Browse
 
@@ -70,23 +80,23 @@ The reading currently uses **local deterministic rules, not an AI model**. It id
 ## Commands
 
 ```sh
-trace-reader list --agent codex --since 7d --json
-trace-reader list --project trace-reader --limit 100 --no-cache
-trace-reader search "auth retry"
-trace-reader inspect LOCAL_ID
-trace-reader read LOCAL_ID --json
-trace-reader read --file ./session.jsonl
-trace-reader demo
-trace-reader scan --root ~/Downloads --recursive
-trace-reader scan --root /custom/claude/projects --agent claude-code
-trace-reader import ./session.jsonl
-trace-reader export LOCAL_ID --out ./session.trace.json
-trace-reader export --file ./session.jsonl --out ./session.trace.json
-trace-reader doctor
-trace-reader adapters --json
-trace-reader roots
-trace-reader cache path
-trace-reader cache clear
+trace-analyser list --agent codex --since 7d --json
+trace-analyser list --project trace-analyser --limit 100 --no-cache
+trace-analyser search "auth retry"
+trace-analyser inspect LOCAL_ID
+trace-analyser read LOCAL_ID --json
+trace-analyser read --file ./session.jsonl
+trace-analyser demo
+trace-analyser scan --root ~/Downloads --recursive
+trace-analyser scan --root /custom/claude/projects --agent claude-code
+trace-analyser import ./session.jsonl
+trace-analyser export LOCAL_ID --out ./session.trace.json
+trace-analyser export --file ./session.jsonl --out ./session.trace.json
+trace-analyser doctor
+trace-analyser adapters --json
+trace-analyser roots
+trace-analyser cache path
+trace-analyser cache clear
 ```
 
 Without a TTY, the default command becomes a finite plain list. `--json` produces one versioned object with scan completeness and diagnostics; warnings do not corrupt stdout. `--plain` forces the line-oriented view. `NO_COLOR=1` and `--no-color` disable styling.

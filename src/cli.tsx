@@ -111,7 +111,7 @@ async function launch(raw: any) {
   await app.waitUntilExit();
 }
 
-program.name('trace-reader').description('Find and read saved agent sessions. Local, offline, no account required.').version('0.1.0');
+program.name('trace-analyser').description('Find and read saved agent sessions. Local, offline, no account required.').version('0.1.0');
 common(program).action(launch);
 common(program.command('demo').description('Explore a synthetic session library; no local stores or AI accessed'))
   .action(raw => launch({ ...raw, demo: true }));
@@ -180,6 +180,6 @@ program.command('cache <action>').description('Show or clear the local metadata 
 });
 try { await program.parseAsync(); }
 catch (error) {
-  process.stderr.write(`trace-reader: ${singleLine(error instanceof Error ? error.message : error)}\n`);
+  process.stderr.write(`trace-analyser: ${singleLine(error instanceof Error ? error.message : error)}\n`);
   if (!process.exitCode) process.exitCode = error instanceof InvalidArgumentError ? 2 : 1;
 }

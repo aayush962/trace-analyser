@@ -1,16 +1,38 @@
 {
-  "name": "trace-reader",
+  "name": "trace-analyser",
   "version": "0.1.0",
-  "description": "A local-first terminal browser for agent traces",
+  "description": "A local-first terminal browser for coding-agent traces",
+  "keywords": [
+    "cli",
+    "terminal",
+    "tui",
+    "ai-agents",
+    "traces",
+    "sessions",
+    "claude-code",
+    "codex",
+    "cursor",
+    "hermes"
+  ],
+  "homepage": "https://theproductartist.com/projects/trace-analyser",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aayush962/trace-analyser.git"
+  },
+  "bugs": {
+    "url": "https://github.com/aayush962/trace-analyser/issues"
+  },
+  "license": "MIT",
+  "author": "Aayush Agarwal",
   "type": "module",
   "bin": {
+    "trace-analyser": "dist/cli.js",
     "trace-reader": "dist/cli.js"
   },
   "files": [
     "dist",
-    "README.md",
-    "docs",
-    "schemas"
+    "schemas",
+    "README.md"
   ],
   "engines": {
     "node": ">=22.13.0"
@@ -24,7 +46,8 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
     "check": "npm run typecheck && npm test && npm run build",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run typecheck && npm test"
   },
   "dependencies": {
     "commander": "15.0.0",
